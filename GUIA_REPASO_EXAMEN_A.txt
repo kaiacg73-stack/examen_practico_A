@@ -1,0 +1,584 @@
+=====================================================================
+ GUIA DE REPASO - PRIMER PARCIAL LABORATORIO ICD (GIIROB)
+ Examen escrito (40 %) + Practico A: evaluacion de prestaciones (60 %)
+ Basada en las practicas P2 (RAID 5) y P3 (prestaciones) - Kai Aoiz
+ (Para estudiar ANTES del examen: en el examen no se permiten apuntes)
+=====================================================================
+
+INDICE
+  0. Reglas de oro y reparto del tiempo
+  1. Fase 1 - Clonar la MV 700, MAC, portapapeles
+  2. Fase 2 - Identificar y mapear discos (anfitrion)
+  3. Fase 3 - Particiones con fdisk               (ESCRITO)
+  4. Fase 4 - Formatear, RAID 5 y montar          (ESCRITO)
+  5. Fase 5 - Benchmark (tabla, dd, script)
+  6. Fase 6 - Graficas, bloque optimo, conclusiones
+  7. Fase 7 - Especificaciones del fabricante
+  8. Fase 8 - Desmontar, parar RAID, limpiar      (ESCRITO)
+  9. Fase 9 - Entregable y reinicio
+ 10. Errores tipicos y erratas del enunciado
+ 11. Chuleta final (toda la secuencia)
+ 12. Lo aprendido en el ensayo en casa
+
+---------------------------------------------------------------------
+0. REGLAS DE ORO Y TIEMPO
+---------------------------------------------------------------------
+Cada una de estas es un CERO si la rompes:
+  - NO mapear /dev/sda ni /dev/sdb del Debian anfitrion (sistema del ECOMP).
+  - NO particionar ni formatear /dev/sda de la MV (su disco de sistema).
+  - El RAID se crea con PARTICIONES (/dev/sdb1), NO con discos (/dev/sdb).
+  - El ordenador tiene que arrancar al reiniciar: limpieza completa y
+    NADA en /etc/fstab.
+
+Reparto (90 min + 30 para entregar):
+  0-10   Fase 1   clonar MV, MAC, portapapeles (lanza el apt pronto)
+  10-20  Fase 2   identificar y mapear discos
+  20-35  Fase 3-4 particiones, formateo, RAID, montaje
+  35-50  Fase 5   benchmark (~10 min); mientras, Word + fase 7
+  50-70  Fase 6-7 graficas, conclusiones, fabricante
+  70-85  Fase 8   desmontar y limpiar
+  90-120 Fase 9   entregable y reinicio
+
+Diferencias con P2/P3:
+  P2: MV 100                         -> examen: MV 700 "DebianAoiz"
+  P2/P3: RAID con discos enteros     -> examen: RAID con sdX1 tipo Linux RAID
+  P3: fdisk n,p,1 (MBR)              -> examen: g primero (GPT) y t (tipo)
+  P3: /mnt/HDD1 /dev/SDD1 /mnt/RAID5 -> examen: /mnt/HDD /mnt/SDD /mnt/RAID
+  P3: 256 MiB, bloques 512B-16M, CSV con comas
+                                     -> examen: 1 GiB, bloques 1k-256k,
+                                        CSV con ; DISPOSITIVO;BS;Tiempo;Tasa
+
+---------------------------------------------------------------------
+1. FASE 1 - CLONAR LA MV 700
+---------------------------------------------------------------------
+Anfitrion (usuario proxmox / clave V1rtu4l):
+  mkdir -p /home/proxmox/Documentos/Examen-<usuarioupvnet>
+  -> guarda ahi TODAS las capturas desde el principio.
+
+Web de Proxmox:
+  - Boton derecho sobre la MV Debian -> Clone -> VM ID 700,
+    Name DebianAoiz, Mode Full Clone.                      (Figura 1)
+  - Hardware -> Network Device (net0) -> Edit -> MAC del anexo
+    de TU ECOMP: ECOMPXX -> 00:50:56:1D:11:XX (o :12:XX).
+    OJO: XX en HEXADECIMAL (ECOMP10 = 0A, ECOMP15 = 0F, ECOMP16 = 10).
+                                                         (Figuras 2-3)
+  - Hardware -> Display -> valores de la Figura 5.       (Figuras 4-5)
+
+En la MV:
+  sudo apt update && sudo apt upgrade -y && sudo apt install -y spice-vdagent
+  sudo systemctl enable --now spice-vdagent      (enunciado: "systemclt" = errata)
+  sudo apt install -y mdadm python3-matplotlib zip
+  sudo reboot
+  ip -br a            -> IP 158.42.181.x
+  ping -c2 debian.org
+
+---------------------------------------------------------------------
+2. FASE 2 - IDENTIFICAR Y MAPEAR DISCOS (EN EL ANFITRION)
+---------------------------------------------------------------------
+  lsblk -o NAME,SIZE,ROTA,TRAN,MODEL,SERIAL,MOUNTPOINTS
+
+Como distinguirlos:
+               SSD                    HDD
+  SIZE         223,6G (240 GB)        931,5G (1 TB)
+  ROTA         0                      1
+  TRAN         sata                   usb
+  MODEL        HP SSD S650 240GB      otro
+  El que tiene algo montado en "/" es el SISTEMA: no se toca.
+
+"La 4a SSD" la eliges tu: las 4 son iguales. 3 al RAID, la que sobra
+es la 4a (ext4 en /mnt/SDD).
+
+Serial de cada SSD:
+  lsblk -o SERIAL /dev/sdc
+  ls -l /dev/disk/by-id/ | grep HP
+
+Mapear (MV apagada mejor):
+  sudo qm set 700 --scsi1 /dev/sdc,serial=<SERIAL_1>
+  sudo qm set 700 --scsi2 /dev/sdd,serial=<SERIAL_2>
+  sudo qm set 700 --scsi3 /dev/sde,serial=<SERIAL_3>
+  sudo qm set 700 --scsi4 /dev/sdf,serial=<SERIAL_4>
+    qm set 700  -> modifica la MV 700
+    --scsiN     -> disco en el bus SCSI N (scsi0 = sistema de la MV);
+                   cada SSD un N distinto
+    /dev/sdc    -> disco ENTERO del anfitrion
+    serial=     -> la MV ve el serial real (para reconocerlo dentro)
+  Respuesta esperada: update VM 700: -scsiN ...
+  "400 too many arguments" = algo mal tecleado (te paso en la P2).
+  Alternativa P2: /dev/disk/by-id/ata-HP_SSD_S650_..._<SERIAL>
+  Evidencia: qm config 700 | grep scsi
+
+Dentro de la MV (Figura 7):
+  lsblk -o NAME,SIZE,SERIAL     -> identificar cada sdX por SERIAL
+  En la MV NO fiarse de ROTA ni MODEL (salen "QEMU HARDDISK").
+  Si el HDD no esta: ls -l /dev/disk/by-id/ | grep usb
+                     sudo qm set 700 --scsi5 /dev/disk/by-id/usb-...
+
+TABLA EN PAPEL (rellenar antes del primer fdisk):
+  Uso        | SERIAL | sdX anfitrion | scsiN | sdX en la MV
+  RAID 1a    |        |               | scsi1 |
+  RAID 2a    |        |               | scsi2 |
+  RAID 3a    |        |               | scsi3 |
+  4a SSD     |        |               | scsi4 |
+  HDD        |        |               |  -    |
+LAS LETRAS DE LA MV NO COINCIDEN CON LAS DEL ANFITRION (en casa salieron
+al reves: el HDD era sdb).
+
+En el resto de la guia (ejemplo): sdb,sdc,sdd = RAID; sde = SSD; sdf = HDD.
+
+---------------------------------------------------------------------
+3. FASE 3 (ESCRITO) - PARTICIONES
+---------------------------------------------------------------------
+3.0 Mirar antes:
+  lsblk                 (sda 32G con "/" = NO TOCAR)
+  cat /proc/mdstat      (si hay un md127 viejo:)
+    sudo mdadm --stop /dev/md127
+    sudo mdadm --zero-superblock /dev/sdb /dev/sdc /dev/sdd
+    sudo wipefs -a /dev/sdb /dev/sdc /dev/sdd /dev/sde /dev/sdf
+
+3.1 Tabla GPT nueva en los 5 discos (Figura 8):
+  echo -e "g\nw\n" | sudo fdisk /dev/sdb
+  echo -e "g\nw\n" | sudo fdisk /dev/sdc
+  echo -e "g\nw\n" | sudo fdisk /dev/sdd
+  echo -e "g\nw\n" | sudo fdisk /dev/sde
+  echo -e "g\nw\n" | sudo fdisk /dev/sdf
+    echo -e  -> \n = Enter; la tuberia | se lo pasa a fdisk
+    g        -> tabla de particiones GPT vacia
+    w        -> escribir y salir (sin w no se guarda)
+
+3.2 LAS DOS SECUENCIAS DE FDISK
+  Formula: g n 1 Enter, luego TAMANO o Enter, luego t TIPO w
+
+  A) SSD del RAID (las 3):        B) HDD y 4a SSD:
+     sudo fdisk /dev/sdX             sudo fdisk /dev/sdX
+     g       tabla GPT               g
+     n       particion nueva         n
+     1       numero 1                1
+     Enter   primer sector 2048      Enter
+     +100G   ULTIMO SECTOR = TAMANO  Enter  HASTA EL FINAL (disco entero)
+     t       cambiar tipo            t
+     raid    Linux RAID (n. 43)      linux  Linux filesystem (n. 20)
+     w       guardar                 w
+  Si pregunta "eliminar la firma?" -> S / Y
+
+  Las dos preguntas tras "n" y "1":
+    Primer sector (..., valor predeterminado 2048):        -> Enter
+    Ultimo sector, +/-sectores o +/-tamano{K,M,G,T,P}:     -> +100G o Enter
+
+  Tamano: el enunciado dice "200M" y "100 GB". Usa +100G: con 200M el
+  RAID tendria ~400 MB y NO cabe el fichero de 1 GiB del benchmark.
+
+  Si al poner el tipo pulsas L o Enter sale una lista larga con ":"
+  abajo -> pulsa q para salir y escribe raid o linux.
+
+  Una linea (si no hay pregunta de firma):
+    echo -e "g\nn\n1\n\n+100G\nt\nraid\nw\n" | sudo fdisk /dev/sdb
+    echo -e "g\nn\n1\n\n\nt\nlinux\nw\n"     | sudo fdisk /dev/sdf
+
+3.3 Comprobar (Figuras 9-12):
+  sudo fdisk -l /dev/sdb /dev/sdc /dev/sdd    -> Tipo: Linux RAID
+  sudo fdisk -l /dev/sdf                      -> Linux filesystem
+  sudo fdisk -l /dev/sde
+  lsblk  -> sdb1 sdc1 sdd1 (100G), sde1, sdf1
+  lsblk -o NAME,SIZE,TYPE,PARTTYPENAME        -> ver tipos de un vistazo
+  Si no aparece una particion: sudo partprobe /dev/sdX
+
+---------------------------------------------------------------------
+4. FASE 4 (ESCRITO) - FORMATEAR, RAID 5, MONTAR
+---------------------------------------------------------------------
+4.1 Formatear SSD y HDD (Figura 13):
+  sudo mkfs.ext4 /dev/sde1
+  sudo mkfs.ext4 /dev/sdf1
+  (sobre la PARTICION; "Proceed anyway?" -> y)
+
+4.2 RAID 5 (Figura 14):
+  sudo mdadm --create --verbose /dev/md0 --level=5 --raid-devices=3 /dev/sdb1 /dev/sdc1 /dev/sdd1
+    --create        crea matriz nueva   --verbose  muestra detalles
+    /dev/md0        dispositivo RAID    --level=5  (NO --level5= como en P2)
+    --raid-devices=3 n. de miembros, seguido de las 3 PARTICIONES
+  Preguntas: "write-intent bitmap? [y/N]" -> y (resincroniza solo lo
+             cambiado; "Consistency Policy: bitmap")
+             "Continue creating array?" -> y
+  Termina con: mdadm: array /dev/md0 started.
+  OJO: SIN barra al final (/dev/sdd1/ -> "Not a directory").
+
+4.3 Formatear el RAID y ver detalle (Figura 15):
+  sudo mkfs.ext4 -F /dev/md0
+  cat /proc/mdstat
+  sudo mdadm --detail /dev/md0
+
+  Como saber si el RAID esta creado:
+   - cat /proc/mdstat: "md0 : active raid5 sdd1[3] sdc1[1] sdb1[0]"
+       y "[3/3] [UUU]" (U = sano, _ = caido). Si pone resync = x %,
+       esta calculando paridad (normal).
+   - lsblk: md0 tipo raid5 debajo de cada miembro
+   - mdadm --detail: si no existe -> "cannot open /dev/md0"
+
+  Lectura de /proc/mdstat:
+    8378368 blocks  -> bloques de 1 KiB: (3-1) x tamano particion
+    super 1.2       -> version del superbloque (lo que borra zero-superblock)
+    512k chunk      -> trozo por disco (banda de datos = 2 x 512K = 1 MiB)
+    algorithm 2     -> left-symmetric (paridad rotando)
+    bitmap          -> write-intent bitmap
+
+  mdadm --detail, valores esperados:
+    Raid Level     raid5
+    Array Size     ~200 GiB = (3-1) x 100 GiB
+    Raid Devices   3 / Total Devices 3
+    State          clean (o clean, resyncing)
+    Active/Working/Failed/Spare  3/3/0/0
+    Layout         left-symmetric
+    Chunk Size     512K
+    Miembros       active sync
+
+4.4 Montar (Figuras 16-19):
+  sudo mkdir -p /mnt/HDD /mnt/SDD /mnt/RAID
+  sudo mount /dev/sdf1 /mnt/HDD
+  sudo mount /dev/sde1 /mnt/SDD
+  sudo mount /dev/md0  /mnt/RAID
+  ls -la /mnt/HDD /mnt/SDD /mnt/RAID   -> lost+found = montado y ext4
+  lsblk                                -> columna MOUNTPOINTS
+  df -h | grep /mnt
+  "wrong fs type" al montar -> no formateaste esa particion.
+  NO TOCAR /etc/fstab.
+
+---------------------------------------------------------------------
+5. FASE 5 - BENCHMARK
+---------------------------------------------------------------------
+Estrategia (para el Word):
+  1. Fichero fijo de 1 GiB y bloque variable (unica variable = bloque).
+  2. Antes de cada prueba se vacia la cache: sync; echo 3 > /proc/sys/vm/drop_caches
+  3. Escritura con conv=fdatasync: dd no acaba hasta que los datos estan
+     en disco -> se mide el disco, no la RAM.
+  4. Lectura del mismo fichero a /dev/null.
+  5. Tiempo con date antes/despues; Tasa = 1024 MiB / tiempo (MiB/s).
+
+Tabla (count = 1048576 KiB / bs en KiB):
+  BlockSize001k_FileSize1Gib.txt   1k    1048576   (enunciado: 1048560 = errata)
+  BlockSize002k_FileSize1Gib.txt   2k     524288
+  BlockSize004k_FileSize1Gib.txt   4k     262144
+  BlockSize008k_FileSize1Gib.txt   8k     131072
+  BlockSize016k_FileSize1Gib.txt  16k      65536
+  BlockSize032k_FileSize1Gib.txt  32k      32768
+  BlockSize064k_FileSize1Gib.txt  64k      16384
+  BlockSize128k_FileSize1Gib.txt 128k       8192
+  BlockSize256k_FileSize1Gib.txt 256k       4096
+
+Orden dd del primer fichero:
+  dd if=/dev/zero of=/mnt/HDD/BlockSize001k_FileSize1Gib.txt bs=1k count=1048576 conv=fdatasync
+    if=/dev/zero     fuente de ceros
+    of=...           fichero en el punto de montaje del disco medido
+    bs=1k            tamano de bloque
+    count=1048576    n. de bloques (1048576 x 1 KiB = 1 GiB)
+    conv=fdatasync   volcar a disco antes de terminar
+  Lectura: dd if=/mnt/HDD/BlockSize001k_FileSize1Gib.txt of=/dev/null bs=1k
+
+Por que NO oflag=direct (P3): con 1 GiB y bloques de 1k tardaria ~220 s
+en el HDD y ~1000 s en el RAID 5 -> mas de 1 hora en total. Con
+conv=fdatasync todo tarda ~10 min. Decision de diseno justificada.
+
+COMO METER EL SCRIPT EN LA MV
+  El enunciado permite usar una IA para escribir los scripts.
+  Opcion a) con el portapapeles (spice-vdagent):
+     mkdir ~/examen && cd ~/examen && nano benchmark.sh
+     pegar, Ctrl+O, Enter, Ctrl+X
+  Opcion b) copiar ficheros por SSH (si la MV tiene openssh-server):
+     scp fichero usuario@IP_MV:~/
+  OJO teclado espanol: ^ y ` son teclas muertas. Para escribir ^ pulsa
+  ^ y luego Espacio (si no, "sed: orden s sin terminar").
+  OJO: ~/examen (con barra). ~examen = home de un usuario "examen".
+
+SCRIPT benchmark.sh (Anexo C)
+---------------------------------------------------------------------
+#!/bin/bash
+# benchmark.sh - Primer parcial ICD. Uso: sudo bash benchmark.sh
+# Genera escritura.csv y lectura.csv con el formato DISPOSITIVO;BS;Tiempo;Tasa
+export LC_ALL=C                         # punto decimal y salida de dd en ingles
+declare -A DIR=( [HDD]=/mnt/HDD [SDD]=/mnt/SDD [RAID5]=/mnt/RAID )
+BLOQUES="1 2 4 8 16 32 64 128 256"      # tamanos de bloque en KiB
+TAM_KIB=1048576                         # 1 GiB = 1048576 KiB
+
+echo "DISPOSITIVO;BS;Tiempo;Tasa" > escritura.csv
+echo "DISPOSITIVO;BS;Tiempo;Tasa" > lectura.csv
+
+limpiar() { sync; echo 3 > /proc/sys/vm/drop_caches; }   # vacia la cache de RAM
+ahora()   { date +%s.%N; }                                 # segundos con decimales
+fila()    { awk -v d=$1 -v b=$2 -v a=$3 -v z=$4 -v m=$5 \
+            'BEGIN { t = z - a; printf "%s;%s;%.3f;%.2f\n", d, b, t, m / t }'; }
+
+for dev in HDD SDD RAID5; do
+    ruta=${DIR[$dev]}
+    mountpoint -q "$ruta" || { echo "ERROR: $ruta no esta montado"; continue; }
+    for k in $BLOQUES; do
+        f=$ruta/$(printf "BlockSize%03dk_FileSize1Gib.txt" $k)
+        count=$(( TAM_KIB / k ))
+        # Escritura: crear el fichero de 1 GiB con bloques de k KiB
+        limpiar; t0=$(ahora)
+        dd if=/dev/zero of=$f bs=${k}k count=$count conv=fdatasync status=none
+        t1=$(ahora); fila $dev ${k}k $t0 $t1 $((TAM_KIB/1024)) >> escritura.csv
+        # Lectura: leer el mismo fichero con el mismo bloque
+        limpiar; t0=$(ahora)
+        dd if=$f of=/dev/null bs=${k}k status=none
+        t1=$(ahora); fila $dev ${k}k $t0 $t1 $((TAM_KIB/1024)) >> lectura.csv
+        echo "$dev  bs=${k}k  hecho"
+    done
+done
+cat escritura.csv; echo; cat lectura.csv
+---------------------------------------------------------------------
+Explicacion:
+  declare -A DIR   diccionario dispositivo -> punto de montaje
+  limpiar          sync + drop_caches (por eso se lanza con sudo bash:
+                   "sudo echo 3 > ..." falla, la redireccion no es root)
+  mountpoint -q    comprueba que esta montado (si no, medirias el sistema)
+  printf %03d      001, 002... para que coincida el nombre con la tabla
+  fila             Tiempo = t1 - t0 ; Tasa = 1024 MiB / Tiempo
+
+Ejecutar:
+  cd ~/examen
+  sudo bash benchmark.sh
+  ls -lh /mnt/HDD /mnt/SDD /mnt/RAID
+  Orden HDD -> SDD -> RAID5: mientras va el HDD el RAID acaba su resync.
+  Antes del RAID: cat /proc/mdstat sin "resync".
+  Mientras corre, la terminal NO acepta ordenes (es normal). Para ver
+  si avanza, abre OTRA terminal: ps aux | grep "[d]d if" ; ls -l /mnt/RAID
+  Para pararlo: Ctrl+C.
+  Ensayo en casa con discos pequenos: TAM_KIB=262144 (256 MiB).
+
+---------------------------------------------------------------------
+6. FASE 6 - GRAFICAS, BLOQUE OPTIMO, CONCLUSIONES
+---------------------------------------------------------------------
+SCRIPT graficas.py (Anexo D)   ->  python3 graficas.py
+---------------------------------------------------------------------
+# graficas.py - Uso: python3 graficas.py  (en la carpeta de los CSV)
+import csv
+import matplotlib
+matplotlib.use("Agg")                     # genera PNG sin abrir ventanas
+import matplotlib.pyplot as plt
+
+for op in ["escritura", "lectura"]:
+    datos = {}                            # {dispositivo: [(bs, tiempo, tasa), ...]}
+    with open(op + ".csv") as fh:
+        for f in csv.DictReader(fh, delimiter=";"):
+            datos.setdefault(f["DISPOSITIVO"], []).append(
+                (f["BS"], float(f["Tiempo"]), float(f["Tasa"])))
+    for col, i, uni in [("Tasa", 2, "MiB/s"), ("Tiempo", 1, "s")]:
+        plt.figure(figsize=(9, 5))
+        for dev, filas in datos.items():
+            plt.plot([x[0] for x in filas], [x[i] for x in filas], marker="o", label=dev)
+            for x in filas:               # etiqueta con el valor en cada punto
+                plt.annotate(f"{x[i]:.0f}", (x[0], x[i]), fontsize=7,
+                             textcoords="offset points", xytext=(0, 5), ha="center")
+        plt.yscale("log")
+        plt.xlabel("Tamaño de bloque (bs)")
+        plt.ylabel(f"{col} ({uni})")
+        plt.title(f"{col} de {op} de un fichero de 1 GiB")
+        plt.grid(True, which="both", alpha=0.3)
+        plt.legend()
+        plt.savefig(f"{op}_{col.lower()}.png", dpi=150, bbox_inches="tight")
+        print("Generada", f"{op}_{col.lower()}.png")
+---------------------------------------------------------------------
+  Genera escritura_tasa.png (Figura 20), lectura_tasa.png (Figura 21)
+  y las de tiempo. Escala log en Y (HDD ~40, RAID ~1000).
+  Ver: xdg-open escritura_tasa.png
+  Si falla import: sudo apt install -y python3-matplotlib
+
+SCRIPT optimo.sh  ->  bash optimo.sh escritura.csv ; bash optimo.sh lectura.csv
+---------------------------------------------------------------------
+# optimo.sh - menor bloque que alcanza el 95 % de la tasa maxima
+awk -F';' 'NR > 1 { d[NR] = $1; b[NR] = $2; t[NR] = $4; if ($4 > m[$1]) m[$1] = $4 }
+  END { for (i = 2; i <= NR; i++)
+          if (!(d[i] in o) && t[i] >= 0.95 * m[d[i]]) { o[d[i]] = b[i]; v[d[i]] = t[i] }
+        for (x in o) printf "%-6s bs optimo = %-5s %8.2f MiB/s (maximo %.2f)\n", x, o[x], v[x], m[x] }' "$1"
+---------------------------------------------------------------------
+Criterio de bloque optimo: el MENOR bloque que alcanza el 95 % de la
+tasa maxima del dispositivo (por encima, la curva es plana).
+
+Que deberias ver:
+  - Curvas que suben con el bloque y se aplanan (coste fijo por syscall).
+  - Orden: HDD < SDD < RAID5.
+  - Meseta (P3): HDD ~36-40 MiB/s, SSD ~490-520, RAID 5 ~900-1200.
+  - Con fdatasync la caida con 1k-4k es menor que en la P3; optimo
+    entre 16k y 256k.
+  - Lectura absurda (3000 MiB/s en HDD) = no se vacio la cache.
+
+Plantilla de conclusiones:
+  "El benchmark escribe y lee un fichero de 1 GiB con bloques de 1 a
+  256 KiB, vaciando la cache antes de cada prueba. En los tres
+  dispositivos la tasa crece con el bloque hasta estabilizarse a partir
+  de ___ KiB, porque con bloques pequenos domina el coste fijo de cada
+  llamada al sistema. El HDD alcanza ___ MiB/s en escritura y ___ en
+  lectura, el SSD ___ y ___ (unas ___ veces mas) y el RAID 5 ___ y ___.
+  El RAID 5 lee mas rapido que un SSD porque reparte la lectura entre
+  3 discos; en escritura la paridad limita la mejora a (N-1) discos de
+  datos. El HDD queda muy por debajo de su hoja por la conexion USB 2.0
+  (~40 MB/s reales). Bloque optimo (menor que da el 95 % del maximo):
+  ___ (HDD), ___ (SDD), ___ (RAID 5)."
+
+---------------------------------------------------------------------
+7. FASE 7 - ESPECIFICACIONES DEL FABRICANTE (modelo de 10)
+---------------------------------------------------------------------
+En el ANFITRION (en la MV salen como QEMU HARDDISK):
+  lsblk -o NAME,SIZE,MODEL,SERIAL,TRAN,ROTA
+  sudo smartctl -i /dev/sdc            (SSD: modelo, "SATA 3.x 6.0 Gb/s")
+  sudo smartctl -d sat -i /dev/sdX     (HDD por USB)
+  lsusb ; lsusb -t                     (480M = USB 2.0, 5000M = USB 3)
+  sudo apt install -y smartmontools    (si falta)
+
+Valores teoricos:
+  SSD HP S650 240 GB  SATA III  lectura 560 MB/s  escritura 460 MB/s
+  HDD 1 TB externo    USB       la de su hoja (2,5": 100-140 MB/s)
+  RAID 5 (3 x S650)             lectura <= 3 x 560 = 1680
+                                escritura ~ (3-1) x 460 = 920
+
+UNIDADES: el script mide MiB/s, el fabricante da MB/s.
+  MB/s = MiB/s x 1,048576   (500 MiB/s = 524 MB/s)
+
+Tabla de contraste:
+  Dispositivo | Op. | Teorico MB/s | Medido MiB/s | Medido MB/s | %
+
+Referencia P3: SSD 550 MB/s lectura (98 %), 520 escritura (por encima de
+460: el fabricante da escritura sostenida conservadora + cache SLC).
+HDD 36-42 MB/s.
+
+Explicaciones:
+  - SSD cerca del teorico: el limite es SATA III (~550-600 MB/s).
+  - HDD muy por debajo: USB 2.0 (480 Mb/s brutos = 35-40 MB/s reales).
+  - Perdidas: virtualizacion (QEMU), ext4, dd con 1 operacion en vuelo.
+
+---------------------------------------------------------------------
+8. FASE 8 (ESCRITO) - DESMONTAR Y LIMPIAR (Anexo A)
+---------------------------------------------------------------------
+Orden: DESMONTAR -> PARAR -> BORRAR SUPERBLOQUE -> BORRAR TABLA
+
+  cd ~
+  sudo umount /mnt/HDD          (o sudo umount /dev/sdf1)
+  sudo umount /mnt/SDD
+  sudo umount /mnt/RAID
+     "target is busy" -> cd ~ y cerrar el explorador de archivos
+  sudo mdadm --stop /dev/md0
+     (no se puede parar montado)
+  sudo mdadm --zero-superblock /dev/sdb1 /dev/sdc1 /dev/sdd1
+     (si no, al arrancar se reensambla solo como md127, como en P3)
+  echo -e "g\nw\n" | sudo fdisk /dev/sdb
+  echo -e "g\nw\n" | sudo fdisk /dev/sdc
+  echo -e "g\nw\n" | sudo fdisk /dev/sdd
+  echo -e "g\nw\n" | sudo fdisk /dev/sde
+  echo -e "g\nw\n" | sudo fdisk /dev/sdf
+     (Anexo A del enunciado: le falta "sudo fdisk")
+  lsblk                          (Figura 22: sin particiones ni md0)
+
+---------------------------------------------------------------------
+9. FASE 9 - ENTREGABLE Y REINICIO (Anexo B)
+---------------------------------------------------------------------
+Pasar ficheros de la MV al anfitrion:
+  En la MV:   sudo apt install -y openssh-server ; whoami ; ip -br a
+  Anfitrion:  scp <usuario_MV>@<IP_MV>:~/examen/* /home/proxmox/Documentos/Examen-<usuarioupvnet>/
+  Plan B: cat fichero en la MV, copiar/pegar con el portapapeles;
+          capturas de las PNG.
+
+Word: pegar capturas, ordenes en las tablas, scripts en anexos C y D;
+guardar como Word en la carpeta.
+
+  cd /home/proxmox/Documentos
+  zip -r <usuarioupvnet>.zip Examen-<usuarioupvnet>
+  unzip -l <usuarioupvnet>.zip
+  ssh <usuarioupvnet>@giirob-lemus.disca.upv.es   (1a vez: clave = DNI,
+                                                  luego nueva; exit)
+  scp <usuarioupvnet>.zip <usuarioupvnet>@giirob-lemus.disca.upv.es:~/
+  + subir el zip a Poliformat.
+  (El enunciado mezcla itaca y disca: usa el que diga el profesor.)
+
+Reiniciar: sudo poweroff en la MV, luego sudo reboot en el anfitrion.
+Si lo pide el profesor: sudo qm set 700 --delete scsi1,scsi2,scsi3,scsi4
+
+---------------------------------------------------------------------
+10. ERRORES TIPICOS Y ERRATAS
+---------------------------------------------------------------------
+Erratas del enunciado:
+  systemclt                        -> systemctl
+  echo -e "g\nw\n" | /dev/sdb      -> echo -e "g\nw\n" | sudo fdisk /dev/sdb
+  count 1k = 1048560               -> 1048576
+  200M y 100 GB a la vez           -> +100G
+  monta /mnt/SDD, captura /mnt/SSD -> usa siempre /mnt/SDD
+  contrastar SDD con hoja del HDD  -> cada disco con su hoja
+
+Errores y arreglos:
+  Device or resource busy (mdadm)  -> RAID viejo: mdadm --stop /dev/md127
+  cannot open /dev/sdd1/: Not a directory -> sobra la / final
+  umount: target is busy           -> cd ~
+  mount: wrong fs type             -> falta mkfs.ext4
+  drop_caches: Permission denied   -> sudo bash script.sh
+  sed: orden s sin terminar        -> tecla muerta ^ (pulsa ^ + Espacio)
+  mv: target ~examen/ no existe    -> es ~/examen/
+  lsblk: columna desconocida       -> NAME,SIZE,SERIAL sin espacios
+  Lista larga de tipos con ":"     -> q para salir
+  Letras sdX distintas             -> identificar por SERIAL y tamano
+
+---------------------------------------------------------------------
+11. CHULETA FINAL
+---------------------------------------------------------------------
+# ANFITRION
+lsblk -o NAME,SIZE,ROTA,TRAN,MODEL,SERIAL,MOUNTPOINTS
+sudo qm set 700 --scsi1 /dev/sdX,serial=<SERIAL>      # x4
+
+# MV - preparar
+sudo apt update && sudo apt install -y spice-vdagent mdadm python3-matplotlib zip
+sudo systemctl enable --now spice-vdagent
+lsblk -o NAME,SIZE,SERIAL; cat /proc/mdstat
+
+# Particiones
+for d in b c d e f; do echo -e "g\nw\n" | sudo fdisk /dev/sd$d; done
+sudo fdisk /dev/sdb   # g n 1 Enter +100G t raid w   (igual sdc, sdd)
+sudo fdisk /dev/sde   # g n 1 Enter Enter t linux w
+sudo fdisk /dev/sdf   # g n 1 Enter Enter t linux w
+sudo fdisk -l /dev/sdb /dev/sdc /dev/sdd; lsblk
+
+# Formatear y RAID
+sudo mkfs.ext4 /dev/sde1
+sudo mkfs.ext4 /dev/sdf1
+sudo mdadm --create --verbose /dev/md0 --level=5 --raid-devices=3 /dev/sdb1 /dev/sdc1 /dev/sdd1
+sudo mkfs.ext4 -F /dev/md0
+sudo mdadm --detail /dev/md0; cat /proc/mdstat
+
+# Montar
+sudo mkdir -p /mnt/HDD /mnt/SDD /mnt/RAID
+sudo mount /dev/sdf1 /mnt/HDD
+sudo mount /dev/sde1 /mnt/SDD
+sudo mount /dev/md0  /mnt/RAID
+ls -la /mnt/HDD /mnt/SDD /mnt/RAID; lsblk; df -h | grep /mnt
+
+# Benchmark
+dd if=/dev/zero of=/mnt/HDD/BlockSize001k_FileSize1Gib.txt bs=1k count=1048576 conv=fdatasync
+sudo bash benchmark.sh
+python3 graficas.py
+bash optimo.sh escritura.csv; bash optimo.sh lectura.csv
+
+# Limpieza
+cd ~
+sudo umount /mnt/HDD; sudo umount /mnt/SDD; sudo umount /mnt/RAID
+sudo mdadm --stop /dev/md0
+sudo mdadm --zero-superblock /dev/sdb1 /dev/sdc1 /dev/sdd1
+for d in b c d e f; do echo -e "g\nw\n" | sudo fdisk /dev/sd$d; done
+lsblk
+
+# Entregable (anfitrion)
+cd /home/proxmox/Documentos && zip -r <usuarioupvnet>.zip Examen-<usuarioupvnet>
+scp <usuarioupvnet>.zip <usuarioupvnet>@giirob-lemus.disca.upv.es:~/
+
+CINCO COSAS QUE NO PUEDES OLVIDAR
+  1. No tocar sda/sdb del anfitrion ni sda de la MV.
+  2. RAID con sdb1 sdc1 sdd1, no con sdb sdc sdd.
+  3. Particiones RAID de +100G (200M no da para 1 GiB).
+  4. systemctl (no systemclt) y sudo fdisk en el Anexo A.
+  5. Nada en /etc/fstab y limpieza completa antes de reiniciar.
+
+---------------------------------------------------------------------
+12. LO APRENDIDO EN EL ENSAYO EN CASA (10/11/2026)
+---------------------------------------------------------------------
+  - Las letras salieron al reves (HDD = sdb, SSD1 = sdf): SIEMPRE serial.
+  - En fdisk, el 2o Enter es el ULTIMO SECTOR: ahi va +100G en el RAID.
+  - El tipo: raid para las del RAID, linux para HDD y 4a SSD.
+  - /dev/sdd1/ con barra final -> "Not a directory".
+  - ~examen no es ~/examen.
+  - ^ es tecla muerta en teclado espanol.
+  - Mientras corre el benchmark la terminal no responde: es normal.
+=====================================================================
